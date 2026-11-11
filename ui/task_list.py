@@ -1,6 +1,6 @@
 # ui/task_list.py
 import tkinter as tk
-from typing import Callable
+from typing import Callable, Optional
 from config import (
     PALETTE,
     INPUT_RADIUS,
@@ -32,7 +32,6 @@ class TaskInput(tk.Canvas):
         self._pill_id = None
         self._circle_id = None
 
-        # Inner borderless text entry
         self.entry = tk.Entry(
             self,
             font=FONT_INPUT,
@@ -48,7 +47,6 @@ class TaskInput(tk.Canvas):
         self.entry.bind("<FocusOut>", self._on_focus_out)
         self.entry.bind("<Return>", self._handle_submit)
 
-        # Redraw rounded capsule & circular '+' button whenever width is set
         self.bind("<Configure>", self._redraw)
 
     def _redraw(self, event: tk.Event) -> None:
@@ -59,7 +57,6 @@ class TaskInput(tk.Canvas):
         self.delete("bg_shapes")
         self.delete("plus_btn")
 
-        # 1. Rounded Input Pill with Faint Thin Border
         border_col = PALETTE["accent"] if self._is_focused else PALETTE["border_faint"]
         self._pill_id = draw_rounded_rect(
             self,
@@ -72,10 +69,8 @@ class TaskInput(tk.Canvas):
             tags="bg_shapes",
         )
 
-        # Clicking anywhere on the pill focuses the text box
         self.tag_bind("bg_shapes", "<Button-1>", lambda _: self.entry.focus_set())
 
-        # 2. Position Entry inside the left/middle of the rounded pill
         btn_diameter = 26
         btn_margin_right = 7
         entry_x = 14
@@ -91,7 +86,6 @@ class TaskInput(tk.Canvas):
             tags="entry_win",
         )
 
-        # 3. Round, Almost-Transparent '+' Button on the Right
         cx = w - btn_margin_right - (btn_diameter / 2)
         cy = h / 2
         r = btn_diameter / 2
@@ -107,7 +101,6 @@ class TaskInput(tk.Canvas):
             tags="plus_btn",
         )
 
-        # 4. Dead-Center '+' Crosshair Lines
         arm = 4.5
         self.create_line(
             cx - arm, cy, cx + arm, cy,
@@ -124,7 +117,6 @@ class TaskInput(tk.Canvas):
             tags="plus_btn",
         )
 
-        # Hover & click events for the '+' button
         self.tag_bind("plus_btn", "<Button-1>", self._handle_submit)
         self.tag_bind("plus_btn", "<Enter>", self._on_btn_enter)
         self.tag_bind("plus_btn", "<Leave>", self._on_btn_leave)
@@ -176,7 +168,7 @@ class TaskInput(tk.Canvas):
 
 
 class TaskItem(tk.Frame):
-    """Readable task row with dark primary text and subtle divider."""
+    """Task row supporting click-to-toggle and double-click inline editing."""
 
     def __init__(
         self,
@@ -185,13 +177,19 @@ class TaskItem(tk.Frame):
         content: str,
         is_completed: bool,
         on_toggle: Callable[[int, bool], None],
+        on_edit: Callable[[int, str], None],
         on_delete: Callable[[int], None],
+        wraplength: int = 235,
     ):
         super().__init__(parent, bg=PALETTE["bg_main"])
         self.task_id = task_id
+        self.content = content
         self.is_completed = bool(is_completed)
         self.on_toggle = on_toggle
+        self.on_edit = on_edit
         self.on_delete = on_delete
+        self._click_timer: Optional[str] = None
+        self.edit_entry: Optional[tk.Entry] = None
 
         self.row = tk.Frame(self, bg=PALETTE["bg_main"], padx=4, pady=7)
         self.row.pack(fill=tk.X, expand=True)
@@ -199,6 +197,7 @@ class TaskItem(tk.Frame):
         self.divider = tk.Frame(self, bg=PALETTE["bg_surface"], height=1)
         self.divider.pack(fill=tk.X, side=tk.BOTTOM)
 
+        # Status Toggle Button (Immediate toggle)
         self.check_btn = tk.Button(
             self.row,
             text="✔" if self.is_completed else "○",
@@ -215,20 +214,7 @@ class TaskItem(tk.Frame):
         )
         self.check_btn.pack(side=tk.LEFT, padx=(0, 6))
 
-        self.text_lbl = tk.Label(
-            self.row,
-            text=content,
-            font=FONT_TASK_DONE if self.is_completed else FONT_TASK,
-            bg=PALETTE["bg_main"],
-            fg=PALETTE["text_muted"] if self.is_completed else PALETTE["text_primary"],
-            anchor="w",
-            wraplength=235,
-            justify=tk.LEFT,
-            cursor="hand2",
-        )
-        self.text_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.text_lbl.bind("<Button-1>", lambda _: self._handle_toggle())
-
+        # Delete Button (packed on right before text_lbl so it stays anchored)
         self.del_btn = tk.Button(
             self.row,
             text="✕",
@@ -245,15 +231,104 @@ class TaskItem(tk.Frame):
         )
         self.del_btn.pack(side=tk.RIGHT)
 
+        # Task Text Label (Single-click toggles, Double-click edits inline)
+        self.text_lbl = tk.Label(
+            self.row,
+            text=self.content,
+            font=FONT_TASK_DONE if self.is_completed else FONT_TASK,
+            bg=PALETTE["bg_main"],
+            fg=PALETTE["text_muted"] if self.is_completed else PALETTE["text_primary"],
+            anchor="w",
+            wraplength=wraplength,
+            justify=tk.LEFT,
+            cursor="hand2",
+        )
+        self.text_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.text_lbl.bind("<Button-1>", self._on_label_single_click)
+        self.text_lbl.bind("<Double-Button-1>", self._on_label_double_click)
+
         for w in (self, self.row, self.text_lbl, self.check_btn, self.del_btn):
             w.bind("<Enter>", self._on_enter)
             w.bind("<Leave>", self._on_leave)
+
+    def set_wraplength(self, wraplength: int) -> None:
+        self.text_lbl.configure(wraplength=max(100, wraplength))
 
     def _on_enter(self, event=None) -> None:
         self.del_btn.configure(fg=PALETTE["text_muted"])
 
     def _on_leave(self, event=None) -> None:
         self.del_btn.configure(fg=PALETTE["bg_surface"])
+
+    # --- Single Click (Toggle) vs Double Click (Inline Edit) ---
+
+    def _on_label_single_click(self, event=None) -> None:
+        if self._click_timer is not None:
+            self.after_cancel(self._click_timer)
+        self._click_timer = self.after(180, self._deferred_toggle)
+
+    def _deferred_toggle(self) -> None:
+        self._click_timer = None
+        if self.edit_entry is None:
+            self._handle_toggle()
+
+    def _on_label_double_click(self, event=None) -> None:
+        if self._click_timer is not None:
+            self.after_cancel(self._click_timer)
+            self._click_timer = None
+        self.start_edit()
+
+    def start_edit(self) -> None:
+        """Swaps the task label for an Entry widget to edit text in place."""
+        if self.edit_entry is not None:
+            return
+
+        self.text_lbl.pack_forget()
+
+        self.edit_entry = tk.Entry(
+            self.row,
+            font=FONT_TASK,
+            bg=PALETTE["bg_input"],
+            fg=PALETTE["text_primary"],
+            insertbackground=PALETTE["accent"],
+            highlightbackground=PALETTE["accent"],
+            highlightcolor=PALETTE["accent"],
+            highlightthickness=1,
+            bd=2,
+            relief=tk.FLAT,
+        )
+        self.edit_entry.insert(0, self.content)
+        self.edit_entry.select_range(0, tk.END)
+        self.edit_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        self.edit_entry.focus_set()
+
+        self.edit_entry.bind("<Return>", self._commit_edit)
+        self.edit_entry.bind("<FocusOut>", self._commit_edit)
+        self.edit_entry.bind("<Escape>", self._cancel_edit)
+
+    def _commit_edit(self, event=None) -> None:
+        if self.edit_entry is None:
+            return
+        new_text = self.edit_entry.get().strip()
+        self._close_editor()
+
+        if new_text and new_text != self.content:
+            self.content = new_text
+            self.text_lbl.configure(text=self.content)
+            self.on_edit(self.task_id, self.content)
+
+    def _cancel_edit(self, event=None) -> None:
+        self._close_editor()
+
+    def _close_editor(self) -> None:
+        if self.edit_entry is not None:
+            entry = self.edit_entry
+            self.edit_entry = None
+            entry.destroy()
+        self.text_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    # --- Visual & State Updates ---
 
     def _update_visuals(self) -> None:
         if self.is_completed:
@@ -273,10 +348,11 @@ class TaskItem(tk.Frame):
 
 
 class TaskContainer(tk.Frame):
-    """Scrollable container supporting mouse wheel scrolling."""
+    """Scrollable container supporting mouse wheel scrolling and responsive wraplength."""
 
     def __init__(self, parent, **kwargs):
         super().__init__(parent, bg=PALETTE["bg_main"], **kwargs)
+        self.current_wraplength = 235
 
         self.canvas = tk.Canvas(
             self,
@@ -297,12 +373,17 @@ class TaskContainer(tk.Frame):
             "<Configure>",
             lambda _: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
         )
-        self.canvas.bind(
-            "<Configure>",
-            lambda e: self.canvas.itemconfig(self.canvas_window, width=e.width),
-        )
-
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+        new_wrap = max(120, event.width - 75)
+        if abs(new_wrap - self.current_wraplength) > 4:
+            self.current_wraplength = new_wrap
+            for child in self.inner_frame.winfo_children():
+                if isinstance(child, TaskItem):
+                    child.set_wraplength(new_wrap)
 
     def _on_mousewheel(self, event: tk.Event) -> None:
         if self.canvas.winfo_exists():
@@ -313,62 +394,3 @@ class TaskContainer(tk.Frame):
     def clear(self) -> None:
         for child in self.inner_frame.winfo_children():
             child.destroy()
-            
-# Test code for task operations
-# if __name__ == "__main__":
-#     root = tk.Tk()
-#     root.geometry("320x450")
-#     root.title("Task List Preview")
-#     root.configure(bg="#1e1e24")
-
-#     # In-memory test state
-#     test_tasks = [
-#         {"id": 1, "content": "Sample active task", "is_completed": False},
-#         {"id": 2, "content": "Sample completed task", "is_completed": True},
-#     ]
-#     next_id = 3
-
-#     container = TaskContainer(root)
-
-#     def render_all_tasks():
-#         container.clear()
-#         for task in test_tasks:
-#             item = TaskItem(
-#                 container.inner_frame,
-#                 task_id=task["id"],
-#                 content=task["content"],
-#                 is_completed=task["is_completed"],
-#                 on_toggle=handle_test_toggle,
-#                 on_delete=handle_test_delete,
-#             )
-#             item.pack(fill=tk.X, pady=3)
-
-#     def handle_test_toggle(tid: int, state: bool):
-#         for task in test_tasks:
-#             if task["id"] == tid:
-#                 task["is_completed"] = state
-#                 break
-
-#     def handle_test_delete(tid: int):
-#         global test_tasks
-#         test_tasks = [t for t in test_tasks if t["id"] != tid]
-#         render_all_tasks()
-
-#     def handle_test_add(text: str):
-#         global next_id
-#         test_tasks.append({"id": next_id, "content": text, "is_completed": False})
-#         next_id += 1
-#         render_all_tasks()
-
-#     # Input bar
-#     inp = TaskInput(root, on_add=handle_test_add)
-#     inp.pack(fill=tk.X, padx=12, pady=8)
-
-#     # Scrollable container
-#     container.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)
-
-#     # Initial render
-#     render_all_tasks()
-
-#     root.mainloop()
-            

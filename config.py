@@ -8,42 +8,45 @@ from pathlib import Path
 
 # --- Build-Safe Path Resolution ---
 if getattr(sys, "frozen", False):
-    # Running as compiled PyInstaller .exe
     APP_DIR = Path(sys.executable).parent
     BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 else:
-    # Running in normal Python development environment
     APP_DIR = Path(__file__).parent
     BUNDLE_DIR = APP_DIR
 
 DB_PATH = APP_DIR / "data" / "tasks.db"
-LOGO_PATH = BUNDLE_DIR / "assets" / "Minimal-To-Do-Logo.ico"
+LOGO_PATH = BUNDLE_DIR / "assets" / "logo.ico"
 
 # --- Color Palette (Light Minimal Theme) ---
 PALETTE = {
     "chroma_key": "#010102",     # Transparent corner mask color
     "bg_main": "#E5E5E5",        # Light Gray - Main window background
-    "bg_surface": "#D4D6DC",     # Slightly darker gray - Header & dividers
-    "bg_input": "#F2F2F4",       # Lighter than bg_main - Rounded input field
+    "bg_surface": "#D4D6DC",     # Slightly darker gray - Header, footer & dividers
+    "bg_input": "#F2F2F4",       # Lighter than bg_main - Rounded input & inline edit
     "border_faint": "#C8CAD0",   # Faint thin 1px border for input pill & '+' ring
     "btn_plus_bg": "#E9EAEF",    # Almost transparent fill for round '+' button
     "btn_plus_hover": "#DCDFE6", # Subtle hover fill for '+' button
     "accent": "#14213D",         # Deep Navy - Active pins, checkmarks, focus border
     "text_primary": "#000000",   # Pure Black - Primary task text
     "text_muted": "#6E7382",     # Muted Slate - Completed tasks & placeholder
-    "danger": "#C94A4A",         # Muted Crimson - Delete button hover state
+    "danger": "#C94A4A",         # Muted Crimson - Delete & Clear hover state
 }
 
 # --- Window Metrics ---
 WINDOW_WIDTH = 340
 WINDOW_HEIGHT = 500
-WINDOW_ALPHA = 0.85  # Increased transparency to blend into desktop background
+MIN_WIDTH = 260
+MIN_HEIGHT = 240
+HEADER_HEIGHT = 38
+FOOTER_HEIGHT = 28
+WINDOW_ALPHA = 0.85
 WINDOW_RADIUS = 20
 INPUT_RADIUS = 18
 
 # --- Typography ---
 FONT_FAMILY = "Segoe UI"
 FONT_HEADER = (FONT_FAMILY, 9, "bold")
+FONT_FOOTER = (FONT_FAMILY, 8, "bold")
 FONT_INPUT = (FONT_FAMILY, 10)
 FONT_TASK = (FONT_FAMILY, 10, "normal")
 FONT_TASK_DONE = (FONT_FAMILY, 10, "overstrike")
@@ -84,12 +87,8 @@ def draw_rounded_rect(
 
 
 def ensure_logo_ico() -> Path:
-    """
-    Ensures assets/logo.ico exists. If you drop your own custom 'assets/logo.ico'
-    in the project, this function leaves it untouched. Otherwise, it generates a
-    clean, minimal #14213D navy rounded icon with a #E5E5E5 checkmark.
-    """
-    target = APP_DIR / "assets" / "Minimal-To-Do-Logo.ico"
+    """Ensures assets/logo.ico exists without overwriting a custom icon."""
+    target = APP_DIR / "assets" / "logo.ico"
     if LOGO_PATH.exists():
         return LOGO_PATH
     if target.exists():
@@ -99,19 +98,16 @@ def ensure_logo_ico() -> Path:
     size = 64
     rows = []
 
-    # Define checkmark line segments for a 64x64 grid
     for y in range(size):
-        row = bytearray([0])  # PNG filter byte
+        row = bytearray([0])
         for x in range(size):
-            # Rounded square mask (radius 14)
             dx = max(0, 14 - x, x - (size - 15))
             dy = max(0, 14 - y, y - (size - 15))
             dist = math.hypot(dx, dy)
 
             if dist > 14.5:
-                row.extend((0, 0, 0, 0))  # Transparent outside corner
+                row.extend((0, 0, 0, 0))
             else:
-                # Checkmark geometry: short leg (18,33)->(27,42), long leg (27,42)->(46,21)
                 on_check = False
                 if 18 <= x <= 27 and abs((y - 33) - (x - 18)) <= 3.2:
                     on_check = True
@@ -119,9 +115,9 @@ def ensure_logo_ico() -> Path:
                     on_check = True
 
                 if on_check:
-                    row.extend((229, 229, 229, 255))  # #E5E5E5 Light Checkmark
+                    row.extend((229, 229, 229, 255))
                 else:
-                    row.extend((20, 33, 61, 255))     # #14213D Deep Navy Background
+                    row.extend((20, 33, 61, 255))
         rows.append(bytes(row))
 
     raw_data = b"".join(rows)
@@ -137,7 +133,6 @@ def ensure_logo_ico() -> Path:
         + png_chunk(b"IEND", b"")
     )
 
-    # Wrap PNG payload in standard Windows ICO container
     ico_header = struct.pack("<HHH", 0, 1, 1)
     ico_dir_entry = struct.pack(
         "<BBBBHHII", size, size, 0, 0, 1, 32, len(png_bytes), 22

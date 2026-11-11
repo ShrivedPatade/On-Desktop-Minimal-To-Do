@@ -68,9 +68,28 @@ def toggle_task(task_id: int, completed: bool) -> None:
         )
 
 
+def update_task_content(task_id: int, new_content: str) -> bool:
+    """Updates the text of an existing task."""
+    clean_text = new_content.strip()
+    if not clean_text:
+        return False
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE tasks SET content = ? WHERE id = ?",
+            (clean_text, task_id),
+        )
+    return True
+
+
 def delete_task(task_id: int) -> None:
     with get_connection() as conn:
         conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+
+def clear_completed_tasks() -> None:
+    """Bulk-deletes all completed tasks from the database."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM tasks WHERE is_completed = 1")
 
 
 def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
@@ -90,15 +109,3 @@ def set_setting(key: str, value: str) -> None:
             """,
             (key, str(value)),
         )
-        
-# Testing code for database operations
-# if __name__ == "__main__":
-#     init_db()
-#     tid = add_task("Test lightweight desktop widget")
-#     print("Added task ID:", tid)
-#     print("All tasks:", [dict(r) for r in get_tasks()])
-#     toggle_task(tid, True)
-#     print("Toggled tasks:", [dict(r) for r in get_tasks()])
-#     delete_task(tid)
-#     print("After delete:", [dict(r) for r in get_tasks()])
-#     print("DB tests passed successfully!")
