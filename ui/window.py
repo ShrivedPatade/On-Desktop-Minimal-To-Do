@@ -22,7 +22,6 @@ from config import (
     ensure_logo_ico,
 )
 
-# Enable High-DPI sharp font rendering & define 64-bit Win32 signatures
 if sys.platform.startswith("win"):
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -40,19 +39,19 @@ if sys.platform.startswith("win"):
     NIF_TIP = 0x00000004
     WM_USER = 0x0400
     WM_TRAYICON = WM_USER + 20
+    WM_HOTKEY = 0x0312
     WM_LBUTTONUP = 0x0202
     WM_LBUTTONDBLCLK = 0x0203
     WM_RBUTTONUP = 0x0205
-    WM_NULL = 0x0000
     IMAGE_ICON = 1
     LR_LOADFROMFILE = 0x00000010
 
-    HWND_TOP = 0
-    HWND_TOPMOST = -1
-    HWND_NOTOPMOST = -2
-    SWP_NOMOVE = 0x0002
-    SWP_NOSIZE = 0x0001
-    SWP_SHOWWINDOW = 0x0040
+    # Global Hotkey Modifiers (Ctrl + Shift + Y)
+    MOD_SHIFT = 0x0004
+    MOD_CONTROL = 0x0002
+    MOD_NOREPEAT = 0x4000
+    HOTKEY_ID = 1
+    VK_Y = 0x59
 
     LRESULT = ctypes.c_ssize_t
     WNDPROC_TYPE = ctypes.WINFUNCTYPE(
@@ -106,10 +105,10 @@ class DesktopTodoWindow(tk.Tk):
         on_pin_change: Optional[Callable[[bool], None]] = None,
         on_shade_change: Optional[Callable[[bool], None]] = None,
         on_clear_completed: Optional[Callable[[], None]] = None,
+        on_hotkey_summon: Optional[Callable[[], None]] = None,
     ):
         super().__init__()
 
-        # --- State & Callbacks ---
         self.width = max(MIN_WIDTH, init_size[0]) if init_size else WINDOW_WIDTH
         self.height = max(MIN_HEIGHT, init_size[1]) if init_size else WINDOW_HEIGHT
         self.is_pinned = init_pinned
@@ -119,14 +118,15 @@ class DesktopTodoWindow(tk.Tk):
         self.on_pin_change = on_pin_change
         self.on_shade_change = on_shade_change
         self.on_clear_completed = on_clear_completed
+        self.on_hotkey_summon = on_hotkey_summon
 
         self._nid = None
         self._tray_hwnd = None
+        self._hotkey_registered = False
         self._wndproc_ref = None
         self._pending_tray_events: List[str] = []
         self.logo_path = ensure_logo_ico()
 
-        # Terminal Ctrl+C & Tray Event Queue Polling
         signal.signal(signal.SIGINT, lambda *_: self.close_app())
         self._poll_system()
 
@@ -135,7 +135,6 @@ class DesktopTodoWindow(tk.Tk):
         except Exception:
             pass
 
-        # --- Frameless & Transparent-Corner Setup ---
         self.overrideredirect(True)
         self.configure(bg=PALETTE["chroma_key"], bd=0, highlightthickness=0)
         if sys.platform.startswith("win"):
@@ -143,7 +142,6 @@ class DesktopTodoWindow(tk.Tk):
         self.attributes("-alpha", WINDOW_ALPHA)
         self.attributes("-topmost", self.is_pinned)
 
-        # --- Initial Position ---
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
 
@@ -158,7 +156,6 @@ class DesktopTodoWindow(tk.Tk):
         cur_h = HEADER_HEIGHT if self.is_shaded else self.height
         self.geometry(f"{self.width}x{cur_h}+{x}+{y}")
 
-        # Drag & Resize tracking
         self._drag_start_x = 0
         self._drag_start_y = 0
         self._resize_start_x = 0
@@ -166,7 +163,6 @@ class DesktopTodoWindow(tk.Tk):
         self._resize_start_w = self.width
         self._resize_start_h = self.height
 
-        # --- Rounded Root Canvas Shell ---
         self.shell_canvas = tk.Canvas(
             self,
             width=self.width,
@@ -177,7 +173,6 @@ class DesktopTodoWindow(tk.Tk):
         )
         self.shell_canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Build Header, Content Frame, and Footer
         self._build_header()
 
         self.content_frame = tk.Frame(
@@ -185,32 +180,35 @@ class DesktopTodoWindow(tk.Tk):
         )
 
         self._build_footer()
-
-        # Draw rounded shell and place windows
         self._redraw_shell()
 
-        # Initialize isolated System Tray Icon
         self.after(50, self._init_system_tray)
 
     def _poll_system(self) -> None:
-        """Processes tray clicks on the main thread and keeps Ctrl+C responsive."""
+        """Processes tray clicks and global hotkey events on the main thread."""
         while self._pending_tray_events:
             evt = self._pending_tray_events.pop(0)
             if evt == "left":
                 self.bring_to_front()
             elif evt == "right":
                 self._show_tray_menu()
+            elif evt == "hotkey":
+                self.summon_and_focus()
         self.after(80, self._poll_system)
 
-    # --- Shell Redraw (Handles Shade Mode & Dynamic Resizing) ---
+    def summon_and_focus(self) -> None:
+        """Unshades (if collapsed), raises window to front, and focuses input bar."""
+        if self.is_shaded:
+            self.toggle_shade()
+        self.bring_to_front()
+        if self.on_hotkey_summon:
+            self.after(30, self.on_hotkey_summon)
 
     def _redraw_shell(self) -> None:
-        """Redraws the rounded background and repositions internal containers."""
         self.shell_canvas.delete("shell_bg")
         cur_h = HEADER_HEIGHT if self.is_shaded else self.height
 
         if self.is_shaded:
-            # Shade Mode: Only the header pill is drawn, with all 4 corners rounded
             draw_rounded_rect(
                 self.shell_canvas,
                 0, 0, self.width, HEADER_HEIGHT,
@@ -223,7 +221,6 @@ class DesktopTodoWindow(tk.Tk):
             self.shell_canvas.delete("body_win")
             self.shell_canvas.delete("footer_win")
         else:
-            # Normal Mode: Full rounded body + top-rounded header
             draw_rounded_rect(
                 self.shell_canvas,
                 0, 0, self.width, cur_h,
@@ -243,7 +240,6 @@ class DesktopTodoWindow(tk.Tk):
                 tags="shell_bg",
             )
 
-            # Position Content Frame
             content_h = max(50, cur_h - HEADER_HEIGHT - FOOTER_HEIGHT - 12)
             self.shell_canvas.delete("body_win")
             self.shell_canvas.create_window(
@@ -256,7 +252,6 @@ class DesktopTodoWindow(tk.Tk):
                 tags="body_win",
             )
 
-            # Position Footer Bar (Clear Completed + Resize Grip)
             self.shell_canvas.delete("footer_win")
             self.shell_canvas.create_window(
                 12,
@@ -268,7 +263,6 @@ class DesktopTodoWindow(tk.Tk):
                 tags="footer_win",
             )
 
-        # Position Header Controls
         self.shell_canvas.delete("header_win")
         self.shell_canvas.create_window(
             12, 4,
@@ -279,14 +273,11 @@ class DesktopTodoWindow(tk.Tk):
             tags="header_win",
         )
 
-    # --- Header & Collapsible Shade Mode ---
-
     def _build_header(self) -> None:
         self.header = tk.Frame(
             self.shell_canvas, bg=PALETTE["bg_surface"], bd=0, highlightthickness=0
         )
 
-        # App Logo Badge
         self.logo_canvas = tk.Canvas(
             self.header,
             width=18,
@@ -305,7 +296,6 @@ class DesktopTodoWindow(tk.Tk):
             fill=PALETTE["bg_main"], width=1.8, capstyle=tk.ROUND, joinstyle=tk.ROUND
         )
 
-        # Title Label
         self.title_lbl = tk.Label(
             self.header,
             text="TASKS",
@@ -316,14 +306,12 @@ class DesktopTodoWindow(tk.Tk):
         )
         self.title_lbl.pack(side=tk.LEFT)
 
-        # Bind Drag and Double-Click Shade Toggle to header elements
         for widget in (self.header, self.logo_canvas, self.title_lbl):
             widget.bind("<ButtonPress-1>", self._start_drag)
             widget.bind("<B1-Motion>", self._on_drag)
             widget.bind("<ButtonRelease-1>", self._stop_drag)
             widget.bind("<Double-Button-1>", lambda _: self.toggle_shade())
 
-        # Close Button
         self.close_btn = tk.Button(
             self.header,
             text="✕",
@@ -340,7 +328,6 @@ class DesktopTodoWindow(tk.Tk):
         )
         self.close_btn.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Pin / Always-on-top Button
         self.pin_btn = tk.Button(
             self.header,
             text="📌",
@@ -357,14 +344,11 @@ class DesktopTodoWindow(tk.Tk):
         )
         self.pin_btn.pack(side=tk.RIGHT, fill=tk.Y)
 
-    # --- Footer (Clear Completed Button & Drag-to-Resize Grip) ---
-
     def _build_footer(self) -> None:
         self.footer = tk.Frame(
             self.shell_canvas, bg=PALETTE["bg_main"], bd=0, highlightthickness=0
         )
 
-        # Subtle "Clear Completed" button on bottom-left
         self.clear_btn = tk.Label(
             self.footer,
             text="",
@@ -387,7 +371,6 @@ class DesktopTodoWindow(tk.Tk):
             lambda _: self.clear_btn.configure(fg=PALETTE["text_muted"]),
         )
 
-        # Bottom-Right Corner Resize Grip
         self.grip_canvas = tk.Canvas(
             self.footer,
             width=16,
@@ -399,7 +382,6 @@ class DesktopTodoWindow(tk.Tk):
         )
         self.grip_canvas.pack(side=tk.RIGHT, anchor="se", pady=2)
 
-        # Draw diagonal grip lines
         for offset in (4, 8, 12):
             self.grip_canvas.create_line(
                 15 - offset, 15, 15, 15 - offset,
@@ -417,7 +399,6 @@ class DesktopTodoWindow(tk.Tk):
             self.on_clear_completed()
 
     def update_status_counts(self, active_count: int, total_count: int) -> None:
-        """Updates both the header counter and the footer 'Clear done' button."""
         if total_count == 0:
             self.title_lbl.configure(text="TASKS")
         else:
@@ -431,18 +412,13 @@ class DesktopTodoWindow(tk.Tk):
         else:
             self.clear_btn.configure(text="", cursor="")
 
-    # --- Collapsible Shade Mode Toggle ---
-
     def toggle_shade(self) -> None:
-        """Collapses window to header bar or restores full height."""
         self.is_shaded = not self.is_shaded
         target_h = HEADER_HEIGHT if self.is_shaded else self.height
         self.geometry(f"{self.width}x{target_h}+{self.winfo_x()}+{self.winfo_y()}")
         self._redraw_shell()
         if self.on_shade_change:
             self.on_shade_change(self.is_shaded)
-
-    # --- Drag-to-Resize Mechanics ---
 
     def _start_resize(self, event: tk.Event) -> None:
         self._resize_start_x = event.x_root
@@ -471,8 +447,6 @@ class DesktopTodoWindow(tk.Tk):
                 self.winfo_x(), self.winfo_y(), self.width, self.height
             )
 
-    # --- Window Dragging ---
-
     def _start_drag(self, event: tk.Event) -> None:
         self._drag_start_x = event.x_root - self.winfo_x()
         self._drag_start_y = event.y_root - self.winfo_y()
@@ -488,29 +462,16 @@ class DesktopTodoWindow(tk.Tk):
                 self.winfo_x(), self.winfo_y(), self.width, self.height
             )
 
-    # --- Pin / Topmost Management ---
-
-    def _get_top_hwnd(self) -> int:
-        if sys.platform.startswith("win"):
-            parent = user32.GetParent(self.winfo_id())
-            return parent if parent else self.winfo_id()
-        return self.winfo_id()
-
     def toggle_pin(self) -> None:
         """Toggles Always-on-Top state and syncs header button & DB."""
         self.is_pinned = not self.is_pinned
-
-        # Update native topmost state via Tk's 64-bit wrapper
         self.attributes("-topmost", self.is_pinned)
         self.update_idletasks()
-
         self.pin_btn.configure(
             fg=PALETTE["accent"] if self.is_pinned else PALETTE["text_muted"]
         )
         if self.on_pin_change:
             self.on_pin_change(self.is_pinned)
-
-    # --- Crash-Proof Isolated Win32 System Tray ---
 
     def _init_system_tray(self) -> None:
         if not sys.platform.startswith("win"):
@@ -528,11 +489,20 @@ class DesktopTodoWindow(tk.Tk):
             wc.lpszClassName = class_name
             user32.RegisterClassExW(ctypes.byref(wc))
 
-            # Dedicated hidden Win32 window for tray events (never touches Tk's HWND)
             self._tray_hwnd = user32.CreateWindowExW(
                 0, class_name, "MinimalToDoTray", 0,
                 0, 0, 0, 0, 0, None, hinst, None
             )
+
+            # Register Global Hotkey: Ctrl + Shift + Y
+            if self._tray_hwnd:
+                res = user32.RegisterHotKey(
+                    self._tray_hwnd,
+                    HOTKEY_ID,
+                    MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT,
+                    VK_Y,
+                )
+                self._hotkey_registered = bool(res)
 
             hicon = user32.LoadImageW(
                 None, str(self.logo_path), IMAGE_ICON, 0, 0, LR_LOADFROMFILE
@@ -547,11 +517,10 @@ class DesktopTodoWindow(tk.Tk):
             self._nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
             self._nid.uCallbackMessage = WM_TRAYICON
             self._nid.hIcon = hicon
-            self._nid.szTip = "Minimal To-Do"
+            self._nid.szTip = "Minimal To-Do (Win+Shift+T)"
 
             shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(self._nid))
 
-            # Right-click context menu
             self.tray_menu = tk.Menu(
                 self,
                 tearoff=0,
@@ -564,7 +533,7 @@ class DesktopTodoWindow(tk.Tk):
                 relief=tk.SOLID,
             )
             self.tray_menu.add_command(
-                label="Bring to Front", command=self.bring_to_front
+                label="Summon & Add Task (Win+Shift+T)", command=self.summon_and_focus
             )
             self.tray_menu.add_command(
                 label="Collapse / Expand (Shade)", command=self.toggle_shade
@@ -582,6 +551,9 @@ class DesktopTodoWindow(tk.Tk):
             pass
 
     def _tray_wndproc(self, hwnd, msg, wparam, lparam):
+        if msg == WM_HOTKEY and wparam == HOTKEY_ID:
+            self._pending_tray_events.append("hotkey")
+            return 0
         if msg == WM_TRAYICON:
             event_code = lparam & 0xFFFF
             if event_code in (WM_LBUTTONUP, WM_LBUTTONDBLCLK):
@@ -606,11 +578,15 @@ class DesktopTodoWindow(tk.Tk):
         self.lift()
         self.focus_force()
         if not self.is_pinned:
-            # Drop topmost flag after raising so clicking another app sends it to background
             self.after(60, lambda: self.attributes("-topmost", False))
 
     def close_app(self) -> None:
         if sys.platform.startswith("win"):
+            if self._hotkey_registered and self._tray_hwnd:
+                try:
+                    user32.UnregisterHotKey(self._tray_hwnd, HOTKEY_ID)
+                except Exception:
+                    pass
             if self._nid is not None:
                 try:
                     shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self._nid))

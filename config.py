@@ -1,10 +1,12 @@
 # config.py
 import math
+import re
 import struct
 import sys
 import tkinter as tk
 import zlib
 from pathlib import Path
+from typing import Tuple
 
 # --- Build-Safe Path Resolution ---
 if getattr(sys, "frozen", False):
@@ -22,6 +24,8 @@ PALETTE = {
     "chroma_key": "#010102",     # Transparent corner mask color
     "bg_main": "#E5E5E5",        # Light Gray - Main window background
     "bg_surface": "#D4D6DC",     # Slightly darker gray - Header, footer & dividers
+    "bg_selected": "#D8DCE6",    # Soft Navy-Gray tint - Keyboard selected task row
+    "bg_drag": "#CFD5E2",        # Highlight tint while dragging a task row
     "bg_input": "#F2F2F4",       # Lighter than bg_main - Rounded input & inline edit
     "border_faint": "#C8CAD0",   # Faint thin 1px border for input pill & '+' ring
     "btn_plus_bg": "#E9EAEF",    # Almost transparent fill for round '+' button
@@ -29,14 +33,23 @@ PALETTE = {
     "accent": "#14213D",         # Deep Navy - Active pins, checkmarks, focus border
     "text_primary": "#000000",   # Pure Black - Primary task text
     "text_muted": "#6E7382",     # Muted Slate - Completed tasks & placeholder
-    "danger": "#C94A4A",         # Muted Crimson - Delete & Clear hover state
+    "danger": "#C94A4A",         # Muted Crimson - Delete & High Priority accent
+    "priority_high": "#C94A4A",  # High Priority (!high / !h) left-border accent
+    "priority_med": "#D97706",   # Medium Priority (!med / !m) left-border accent
+    "priority_none": "#C8CAD0",  # Normal Priority subtle left-border bar
+}
+
+PRIORITY_COLORS = {
+    0: PALETTE["priority_none"],
+    1: PALETTE["priority_med"],
+    2: PALETTE["priority_high"],
 }
 
 # --- Window Metrics ---
-WINDOW_WIDTH = 340
-WINDOW_HEIGHT = 500
-MIN_WIDTH = 260
-MIN_HEIGHT = 240
+WINDOW_WIDTH = 350
+WINDOW_HEIGHT = 520
+MIN_WIDTH = 280
+MIN_HEIGHT = 250
 HEADER_HEIGHT = 38
 FOOTER_HEIGHT = 28
 WINDOW_ALPHA = 0.85
@@ -50,7 +63,30 @@ FONT_FOOTER = (FONT_FAMILY, 8, "bold")
 FONT_INPUT = (FONT_FAMILY, 10)
 FONT_TASK = (FONT_FAMILY, 10, "normal")
 FONT_TASK_DONE = (FONT_FAMILY, 10, "overstrike")
+FONT_SUBTASK = (FONT_FAMILY, 9, "normal")
+FONT_SUBTASK_DONE = (FONT_FAMILY, 9, "overstrike")
+FONT_BADGE = (FONT_FAMILY, 8, "bold")
 FONT_ICON = (FONT_FAMILY, 10, "bold")
+
+
+def parse_priority_tag(text: str, default_priority: int = 0) -> Tuple[str, int]:
+    """
+    Extracts !high (!h), !med (!m), or !low (!l) from task input text.
+    Returns (cleaned_text, priority_int) where 0=normal, 1=med, 2=high.
+    """
+    priority = default_priority
+    tag_pattern = re.compile(r"(?:^|\s)!(high|h|med|m|low|l)\b", re.IGNORECASE)
+    match = tag_pattern.search(text)
+    if match:
+        tag = match.group(1).lower()
+        if tag in ("high", "h"):
+            priority = 2
+        elif tag in ("med", "m"):
+            priority = 1
+        elif tag in ("low", "l"):
+            priority = 0
+        text = (text[: match.start()] + " " + text[match.end() :]).strip()
+    return text.strip(), priority
 
 
 def draw_rounded_rect(
